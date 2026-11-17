@@ -3246,4 +3246,119 @@ mod tests {
         assert_eq!(message.rich_message(), None);
         assert_eq!(message.text(), Some("plain"));
     }
+
+    /// A channel post that replies to a post of another channel. `extra` goes
+    /// into `external_reply` after its `origin`, `chat` and `message_id`.
+    fn channel_post_replying_to_another_channel(extra: &str) -> String {
+        format!(
+            r#"{{
+              "message_id": 45,
+              "sender_chat": {{"id": -1001234567890, "title": "Blog", "type": "channel"}},
+              "chat": {{"id": -1001234567890, "title": "Blog", "type": "channel"}},
+              "date": 1762860000,
+              "text": "My comment on their post",
+              "external_reply": {{
+                "origin": {{
+                  "type": "channel",
+                  "chat": {{"id": -1009876543210, "title": "Source", "type": "channel"}},
+                  "message_id": 78,
+                  "date": 1762850000
+                }},
+                "chat": {{"id": -1009876543210, "title": "Source", "type": "channel"}},
+                "message_id": 78{extra}
+              }},
+              "quote": {{"text": "their text", "position": 0}}
+            }}"#
+        )
+    }
+
+    /// Parses `json`, checks that it is a common message with the reply text
+    /// and an external reply, and that it survives a serialize/parse round
+    /// trip. Returns the external reply.
+    fn assert_external_reply_kept(json: &str) -> ExternalReplyInfo {
+        let message: Message = from_str(json).unwrap();
+        assert_matches!(message.kind, MessageKind::Common(_));
+        assert_eq!(message.text(), Some("My comment on their post"));
+
+        let round_trip: Message =
+            serde_json::from_value(serde_json::to_value(&message).unwrap()).unwrap();
+        assert_eq!(round_trip, message);
+
+        let MessageKind::Common(common) = message.kind else { unreachable!() };
+        let reply = common.external_reply.expect("external_reply must be kept");
+        assert_eq!(reply.message_id, Some(MessageId(78)));
+        reply
+    }
+
+    /// A reply to another channel's text post. Telegram sends no `text` in
+    /// `ExternalReplyInfo` (the quoted text goes in `Message.quote`), so the
+    /// reply has no kind. It used to fall through to `MessageKind::Empty`.
+    #[test]
+    fn de_external_reply_to_text_post() {
+        let reply = assert_external_reply_kept(&channel_post_replying_to_another_channel(""));
+        assert_eq!(reply.kind, None);
+    }
+
+    /// A reply to another channel's photo post keeps the photo kind.
+    #[test]
+    fn de_external_reply_to_photo_post() {
+        let reply = assert_external_reply_kept(&channel_post_replying_to_another_channel(
+            r#", "photo": [{"file_id": "p", "file_unique_id": "pu", "width": 1, "height": 1}]"#,
+        ));
+        assert_matches!(reply.kind, Some(ExternalReplyInfoKind::Photo(_)));
+    }
+
+    /// A reply to another channel's article (rich message). The Bot API lists
+    /// no field for it in `ExternalReplyInfo`, so it looks like a text-post
+    /// reply. Built from the Bot API docs, not a captured update.
+    #[test]
+    fn de_external_reply_to_article_post() {
+        let reply = assert_external_reply_kept(&channel_post_replying_to_another_channel(""));
+        assert_eq!(reply.kind, None);
+    }
+
+    /// Kinds teloxide has no variant for (newer Bot API fields such as
+    /// `widget`, `live_photo`, or a `rich_message` should Telegram ever send
+    /// one) must not drop the message either: the reply is kept without a
+    /// kind.
+    #[test]
+    fn de_external_reply_with_unknown_kind() {
+        for extra in [
+            r#", "widget": {"url": "https://example.com"}"#,
+            r#", "live_photo": {"file_id": "l", "file_unique_id": "lu"}"#,
+            r#", "rich_message": {"blocks": [{"type": "heading", "size": 1, "text": "Title"}]}"#,
+        ] {
+            let json = channel_post_replying_to_another_channel(extra);
+            let message: Message = from_str(&json).unwrap();
+            assert_matches!(message.kind, MessageKind::Common(_));
+            assert_eq!(message.text(), Some("My comment on their post"));
+            let MessageKind::Common(common) = message.kind else { unreachable!() };
+            assert_eq!(common.external_reply.unwrap().kind, None, "{extra}");
+        }
+    }
+
+    /// A reply to a message of a chat that is not a supergroup or a channel:
+    /// no `chat` and no `message_id` in `ExternalReplyInfo`.
+    #[test]
+    fn de_external_reply_without_chat_and_message_id() {
+        let json = r#"{
+          "message_id": 46,
+          "chat": {"id": -1001234567890, "title": "Group", "type": "supergroup"},
+          "from": {"id": 1, "is_bot": false, "first_name": "A"},
+          "date": 1762860000,
+          "text": "reply",
+          "external_reply": {
+            "origin": {"type": "hidden_user", "sender_user_name": "Someone", "date": 1762850000}
+          }
+        }"#;
+        let message: Message = from_str(json).unwrap();
+        assert_eq!(message.text(), Some("reply"));
+        let MessageKind::Common(common) = message.kind else {
+            panic!("expected a common message, got {:?}", message.kind)
+        };
+        let reply = common.external_reply.unwrap();
+        assert_eq!(reply.message_id, None);
+        assert_eq!(reply.chat, None);
+        assert_eq!(reply.kind, None);
+    }
 }

@@ -17,7 +17,7 @@ pub struct ExternalReplyInfo {
     pub chat: Option<Chat>,
     /// Unique message identifier inside the original chat. Available only if
     /// the original chat is a supergroup or a channel.
-    #[serde(with = "crate::types::option_msg_id_as_int")]
+    #[serde(default, with = "crate::types::option_msg_id_as_int")]
     pub message_id: Option<MessageId>,
     /// Options used for link preview generation for the original message, if it
     /// is a text message.
@@ -26,8 +26,16 @@ pub struct ExternalReplyInfo {
     #[serde(default)]
     pub has_media_spoiler: bool,
 
+    /// Content of the replied message. `None` if it has no media this enum
+    /// knows: a text message (its text goes in [`Message::quote`]), an
+    /// article (rich message), or a kind added to the Bot API later. A
+    /// required field here made the whole message fall through to
+    /// [`MessageKind::Empty`].
+    ///
+    /// [`Message::quote`]: crate::types::MessageCommon::quote
+    /// [`MessageKind::Empty`]: crate::types::MessageKind::Empty
     #[serde(flatten)]
-    pub kind: ExternalReplyInfoKind,
+    pub kind: Option<ExternalReplyInfoKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
